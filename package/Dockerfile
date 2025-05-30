@@ -11,13 +11,13 @@ RUN zypper -n rm container-suseconnect && \
 WORKDIR /var/lib/harvester/harvester
 
 ARG HARVESTER_UI_VERSION
-ENV HARVESTER_UI_VERSION=${HARVESTER_UI_VERSION:-v1.5.0}
+ENV HARVESTER_UI_VERSION=${HARVESTER_UI_VERSION:-v1.5.0-cn}
 ENV HARVESTER_UI_PATH /usr/share/harvester/harvester
 # Please update the api-ui-version in pkg/settings/settings.go when updating the version here.
 ENV HARVESTER_API_UI_VERSION 1.1.9
 
 ARG HARVESTER_UI_PLUGIN_BUNDLED_VERSION
-ENV HARVESTER_UI_PLUGIN_BUNDLED_VERSION=${HARVESTER_UI_PLUGIN_BUNDLED_VERSION:-v1.5.0}
+ENV HARVESTER_UI_PLUGIN_BUNDLED_VERSION=${HARVESTER_UI_PLUGIN_BUNDLED_VERSION:-v1.5.0-cn}
 
 ARG ARCH=amd64
 ARG VERSION=dev
@@ -32,13 +32,13 @@ RUN curl -sLf ${!TINI_URL} > /usr/bin/tini && chmod +x /usr/bin/tini
 
 RUN mkdir -p /usr/share/harvester/harvester && \
     cd /usr/share/harvester/harvester && \
-    curl -sL https://releases.rancher.com/harvester-ui/dashboard/${HARVESTER_UI_VERSION}.tar.gz | tar xvzf - --strip-components=2 && \
+    curl -sL https://cn-harvester-ui.s3.ap-east-1.amazonaws.com/dashboard/${HARVESTER_UI_VERSION}.tar.gz | tar xvzf - --strip-components=2 && \
     mkdir -p /usr/share/harvester/harvester/api-ui && \
     cd /usr/share/harvester/harvester/api-ui && \
     curl -sL https://releases.rancher.com/api-ui/${HARVESTER_API_UI_VERSION}.tar.gz | tar xvzf - --strip-components=1 && \
     mkdir -p /usr/share/harvester/harvester/v1/harvester/plugin-assets && \
     cd /usr/share/harvester/harvester/v1/harvester/plugin-assets && \
-    curl -sL https://releases.rancher.com/harvester-ui/plugin/harvester-${HARVESTER_UI_PLUGIN_BUNDLED_VERSION}.tar.gz | tar xvzf - --strip-components=1 && \
+    curl -sL https://cn-harvester-ui.s3.ap-east-1.amazonaws.com/plugin/harvester-${HARVESTER_UI_PLUGIN_BUNDLED_VERSION}.tar.gz | tar xvzf - --strip-components=1 && \
     cd /var/lib/harvester/harvester
 
 COPY entrypoint.sh harvester /usr/bin/

@@ -1,0 +1,277 @@
+name: build cn
+on:
+  push:
+    branches:
+    - master
+    - release-*
+    - v*
+    tags:
+    - v*
+  pull_request:
+  schedule:
+    - cron: "10 0,12 * * *"
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && !startsWith(github.ref, 'refs/heads/v') && !startsWith(github.ref, 'refs/tags/v') }}
+jobs:
+  build-binaries:
+    name: Build binaries
+    runs-on: self-hosted
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # Build binaries
+    - name: Run make ci
+      run: make ci
+
+    - name: Upload binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: binaries_x64_artifact
+        path: ./bin/*
+
+  build-push-images:
+    name: Build and push images
+    runs-on: self-hosted
+    needs: build-binaries
+    if: ${{ startsWith(github.ref, 'refs/heads/') || startsWith(github.ref, 'refs/tags/') }}
+    permissions:
+      contents: read
+      id-token: write # for reading credential https://github.com/rancher-eio/read-vault-secrets
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Declare branch and sha_short
+      run: |
+        echo "sha_short=$(git rev-parse --short=8 "$GITHUB_SHA")" >> "$GITHUB_ENV"
+        echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> "$GITHUB_ENV"
+        echo "arch=amd64" >> "$GITHUB_ENV"
+
+    - name: Download binaries
+      uses: actions/download-artifact@v4
+      with:
+        name: binaries_x64_artifact
+        path: ./bin/
+
+    - name: Add executable permission
+      run: |
+        chmod +x ./bin/*
+
+    - name: Copy bin folder to package
+      run: |
+        cp -r ./bin/harvester ./package/
+        cp -r ./bin/harvester-webhook ./package/
+        cp -r ./bin/upgrade-helper ./package/upgrade/
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    # liuyan/harvester image
+    - name: docker-publish-harvester-with-tag
+      if: ${{ startsWith(github.ref, 'refs/tags/') }}
+      uses: docker/build-push-action@v5
+      with:
+        context: package/
+        push: true
+        platforms: linux/amd64
+        tags: liuyan/harvester:${{ github.ref_name }}-amd64
+        file: package/Dockerfile
+        build-args: |
+          ARCH=amd64
+          VERSION=${{ github.ref_name }}
+
+    # liuyan/harvester-webhook image
+    - name: docker-publish-harvester-webhook-with-tag
+      if: ${{ startsWith(github.ref, 'refs/tags/') }}
+      uses: docker/build-push-action@v5
+      with:
+        context: package/
+        push: true
+        platforms: linux/amd64
+        tags: liuyan/harvester-webhook:${{ github.ref_name }}-amd64
+        file: package/Dockerfile.webhook
+        build-args: |
+          ARCH=amd64
+          VERSION=${{ github.ref_name }}
+
+    - name: generate addon manifests
+      run: make generate-addons
+
+    # liuyan/harvester-upgrade image
+    - name: docker-publish-harvester-upgrade-with-tag
+      if: ${{ startsWith(github.ref, 'refs/tags/') }}
+      uses: docker/build-push-action@v5
+      with:
+        context: package/upgrade
+        push: true
+        platforms: linux/amd64
+        tags: liuyan/harvester-upgrade:${{ github.ref_name }}-amd64
+        file: package/upgrade/Dockerfile
+        build-args: |
+          ARCH=amd64
+          VERSION=${{ github.ref_name }}
+
+  manifest-images:
+    name: Manifest images
+    runs-on: self-hosted
+    needs: build-push-images
+    if: ${{ startsWith(github.ref, 'refs/heads/') || startsWith(github.ref, 'refs/tags/') }}
+    permissions:
+      contents: read
+      id-token: write # for reading credential https://github.com/rancher-eio/read-vault-secrets
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Declare branch
+      run: |
+        echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> "$GITHUB_ENV"
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    # liuyan/harvester image
+    - name: docker-pull-harvester-with-tag
+      if: ${{ startsWith(github.ref, 'refs/tags/') }}
+      run: |
+        docker pull --platform linux/amd64 liuyan/harvester:${{ github.ref_name }}-amd64
+        docker buildx imagetools create -t liuyan/harvester:${{ github.ref_name }} \
+          liuyan/harvester:${{ github.ref_name }}-amd64
+
+    # liuyan/harvester-webhook image
+    - name: docker-pull-harvester-webhook-with-tag
+      if: ${{ startsWith(github.ref, 'refs/tags/') }}
+      run: |
+        docker pull --platform linux/amd64 liuyan/harvester-webhook:${{ github.ref_name }}-amd64
+        docker buildx imagetools create -t liuyan/harvester-webhook:${{ github.ref_name }} \
+          liuyan/harvester-webhook:${{ github.ref_name }}-amd64
+
+    # liuyan/harvester-upgrade image
+    - name: docker-pull-harvester-upgrade-with-tag
+      if: ${{ startsWith(github.ref, 'refs/tags/') }}
+      run: |
+        docker pull --platform linux/amd64 liuyan/harvester-upgrade:${{ github.ref_name }}-amd64
+        docker buildx imagetools create -t liuyan/harvester-upgrade:${{ github.ref_name }} \
+          liuyan/harvester-upgrade:${{ github.ref_name }}-amd64
+
+  build-iso:
+    name: Build ISO
+    runs-on: self-hosted
+    needs: manifest-images
+    if: ${{ startsWith(github.ref, 'refs/heads/') || startsWith(github.ref, 'refs/tags/') }}
+    permissions:
+      contents: write # for github prerelease action
+      id-token: write # for reading credential https://github.com/rancher-eio/read-vault-secrets
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Declare branch
+      run: |
+        echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> "$GITHUB_ENV"
+        echo "arch=amd64" >> "$GITHUB_ENV"
+
+    - name: build-tag-iso
+      if: ${{ startsWith(github.ref, 'refs/tags/') }}
+      run: |
+        make build-iso
+      env:
+        REPO: liuyan
+        DRONE_BRANCH: ${{ github.ref_name }}
+        DRONE_TAG: ${{ github.ref_name }}
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    # liuyan/harvester-cluster-repo image
+    - name: docker-publish-harvester-cluster-repo-with-tag
+      if: ${{ startsWith(github.ref, 'refs/tags/') }}
+      uses: docker/build-push-action@v5
+      with:
+        context: dist/harvester-cluster-repo
+        push: true
+        platforms: linux/${{ env.arch }}
+        tags: liuyan/harvester-cluster-repo:${{ github.ref_name }}-${{ env.arch }}
+        file: dist/harvester-cluster-repo/Dockerfile
+
+    # - id: install-aws-cli
+    #   name: Install AWS CLI
+    #   run: |
+    #     sudo apt-get update && sudo apt-get install -y unzip
+    #     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    #     unzip awscliv2.zip
+    #     sudo ./aws/install
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+        aws-region: ap-southeast-2
+
+    - name: upload-iso-with-tag
+      if: ${{ startsWith(github.ref, 'refs/tags/') }}
+      run: |
+        aws s3 cp dist/artifacts/ s3://cn-harvester/harvester/${{ github.ref_name }}/ --recursive --acl public-read
+
+  manifest-cluster-repo-image:
+    name: Manifest harvester-cluster-repo image
+    runs-on: self-hosted
+    needs: build-iso
+    if: ${{ startsWith(github.ref, 'refs/heads/') || startsWith(github.ref, 'refs/tags/') }}
+    permissions:
+      contents: read
+      id-token: write # for reading credential https://github.com/rancher-eio/read-vault-secrets
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Declare branch
+      run: |
+        echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> "$GITHUB_ENV"
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    # liuyan/harvester-cluster-repo image
+    - name: docker-pull-harvester-cluster-repo-with-tag
+      if: ${{ startsWith(github.ref, 'refs/tags/') }}
+      run: |
+        docker pull --platform linux/amd64 liuyan/harvester-cluster-repo:${{ github.ref_name }}-amd64
+        docker buildx imagetools create -t liuyan/harvester-cluster-repo:${{ github.ref_name }} \
+          liuyan/harvester-cluster-repo:${{ github.ref_name }}-amd64
